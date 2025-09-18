@@ -1,0 +1,91 @@
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    container_name: es
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - ELASTIC_PASSWORD=changeme
+    ports:
+      - "9200:9200"
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200 >/dev/null || exit 1"]
+      interval: 5s
+      retries: 20
+
+  init-kibana-token:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    volumes:
+      - esconfig:/esconfig
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      set -e
+      until curl -s -u elastic:changeme http://es:9200/_cluster/health | grep -q '"status"'; do
+        sleep 2
+      done
+      TOKEN_FILE=/esconfig/kibana.token
+      if [ ! -s "$TOKEN_FILE" ]; then
+        echo "Creating Kibana service account token..."
+        bin/elasticsearch-service-tokens create elastic/kibana kibana-token | awk '/=/ {print $NF}' > "$TOKEN_FILE"
+      else
+        echo "Kibana token already exists."
+      fi
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.15.0
+    container_name: kb
+    depends_on:
+      init-kibana-token:
+        condition: service_completed_successfully
+    volumes:
+      - esconfig:/esconfig:ro
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      set -e
+      TOKEN_FILE=/esconfig/kibana.token
+      until [ -s "$TOKEN_FILE" ]; do
+        echo "Waiting for Kibana token..."
+        sleep 1
+      done
+      export ELASTICSEARCH_SERVICEACCOUNTTOKEN=$(cat "$TOKEN_FILE")
+      export ELASTICSEARCH_HOSTS="http://es:9200"
+      exec /usr/local/bin/kibana-docker
+    ports:
+      - "5601:5601"
+
+  apm-server:
+    image: docker.elastic.co/apm/apm-server:8.15.0
+    container_name: apm
+    depends_on:
+      - elasticsearch
+    command: >
+      apm-server -e
+        -E apm-server.host=0.0.0.0:8200
+        -E output.elasticsearch.hosts=["http://es:9200"]
+        -E output.elasticsearch.username=elastic
+        -E output.elasticsearch.password=changeme
+        -E output.elasticsearch.ssl.enabled=false
+    ports:
+      - "8200:8200"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "14317:4317" # OTLP gRPC receiver
+    depends_on:
+      - apm-server
+
+volumes:
+  esdata:
+  esconfig:

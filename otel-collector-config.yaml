@@ -1,0 +1,25 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317 # Receive OTLP gRPC on this port
+      http:
+        endpoint: 0.0.0.0:4318 # Optional: Receive OTLP HTTP on this port
+
+exporters:
+  otlp:
+    endpoint: apm-server:8200 # Send OTLP data to the APM Server
+    tls:
+      insecure: true # For development, use insecure connection to APM Server
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [otlp]
+    metrics:
+      receivers: [otlp]
+      exporters: [otlp]
+    logs:
+      receivers: [otlp]
+      exporters: [otlp]
